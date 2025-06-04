@@ -5,8 +5,116 @@ from scipy.spatial import Delaunay
 import os
 import pandas as pd
 import concavity
+from typing import Optional
+
+# ===== MESH2D CLASS INTEGRATED =====
+class Mesh2D:
+    def __init__(self):
+        self.nodes = None
+        self.node_ids = None
+        self.elements = None
+        self.edge_node_ids = None
+        self.hole_node_ids = None
+
+    def set_nodes(self, coordinates: np.ndarray, node_ids: Optional[np.ndarray] = None):
+        self.nodes = np.array(coordinates)
+        self.node_ids = node_ids if node_ids is not None else np.arange(1, len(coordinates)+1)
+
+    def set_metadata(self, edge_node_ids=None, hole_node_ids=None):
+        self.edge_node_ids = edge_node_ids
+        self.hole_node_ids = hole_node_ids
+
+    def generate_triangular_mesh(self, respect_holes: bool = True) -> tuple:
+        if self.nodes is None:
+            raise ValueError("Nodes not set.")
+
+        tri = Delaunay(self.nodes)
+        valid_elements = []
+        element_id = 1
+
+        for simplex in tri.simplices:
+            triangle_nodes = self.nodes[simplex]
+            is_valid = True
+
+            edges = [
+                np.linalg.norm(triangle_nodes[1] - triangle_nodes[0]),
+                np.linalg.norm(triangle_nodes[2] - triangle_nodes[1]),
+                np.linalg.norm(triangle_nodes[0] - triangle_nodes[2])
+            ]
+            max_edge = max(edges)
+
+            if not hasattr(self, '_avg_edge_length'):
+                all_edges = []
+                for s in tri.simplices[:100]:
+                    tn = self.nodes[s]
+                    all_edges.extend([
+                        np.linalg.norm(tn[1] - tn[0]),
+                        np.linalg.norm(tn[2] - tn[1]),
+                        np.linalg.norm(tn[0] - tn[2])
+                    ])
+                self._avg_edge_length = np.median(all_edges)
+
+            if max_edge > 3 * self._avg_edge_length:
+                is_valid = False
+
+            if respect_holes and self.hole_node_ids is not None:
+                match_count = sum((n + 1) in self.hole_node_ids for n in simplex)
+                if match_count == 3:
+                    is_valid = False
+
+            if is_valid:
+                valid_elements.append([element_id] + (simplex + 1).tolist())
+                element_id += 1
+
+        self.elements = np.array(valid_elements)
+        return self.nodes, self.elements
+
+    def export_mesh(self, export_dir: str):
+        if self.nodes is None or self.elements is None:
+            raise ValueError("Mesh not generated.")
+
+        os.makedirs(export_dir, exist_ok=True)
+        nodes_file = os.path.join(export_dir, "mesh_nodes.txt")
+        elements_file = os.path.join(export_dir, "mesh_elements.txt")
+
+        node_data = np.column_stack([np.arange(1, len(self.nodes)+1), self.nodes])
+        np.savetxt(nodes_file, node_data, fmt=['%d', '%.6f', '%.6f'], header='NodeID X Y', comments='')
+        np.savetxt(elements_file, self.elements, fmt='%d', header='ElementID Node1 Node2 Node3', comments='')
+
+        print(f"Mesh exported to:\n  {nodes_file}\n  {elements_file}")
+
+    def plot_mesh(self, figsize=(12, 6), save_path=None):
+        if self.nodes is None or self.elements is None:
+            raise ValueError("Mesh not generated.")
+
+        fig, ax = plt.subplots(figsize=figsize)
+        for elem in self.elements:
+            pts = self.nodes[elem[1:4] - 1]
+            pts = np.vstack([pts, pts[0]])
+            ax.plot(pts[:, 0], pts[:, 1], 'b-', linewidth=0.5)
+
+        if self.edge_node_ids is not None:
+            all_ids = self.node_ids
+            edge_mask = np.isin(all_ids, self.edge_node_ids)
+            interior_mask = ~edge_mask
+            ax.plot(self.nodes[interior_mask, 0], self.nodes[interior_mask, 1], 'ro', markersize=2, label="Interior Nodes")
+            ax.plot(self.nodes[edge_mask, 0], self.nodes[edge_mask, 1], 'go', markersize=3, label="Boundary Nodes")
+            ax.legend()
+        else:
+            ax.plot(self.nodes[:, 0], self.nodes[:, 1], 'ro', markersize=2)
+
+        ax.set_title(f'Triangular Mesh: {len(self.nodes)} nodes, {len(self.elements)} elements')
+        ax.set_aspect('equal')
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(save_path, dpi=300)
+            print(f"Mesh plot saved to {save_path}")
+        plt.show()
 
 
+# ===== EDGE + HOLE DETECTION FUNCTIONS (original) =====
 def edge_hole_detection_from_arrays(node_ids, x, y, min_hole_size=0.5, max_hole_size=20.0, combine_output=False, output_dir='results'):
     """
     Detect edge and hole nodes from arrays of node IDs and coordinates.
@@ -151,27 +259,36 @@ def visualize_results(x, y, node_ids, edge_node_ids, hole_node_ids, output_dir):
     plt.show()
 
 
+# ===== MAIN ENTRY POINT =====
 def main():
-    """
-    Main function to load data and perform edge and hole detection.
-    """
     try:
         experiment_number = input("Please enter the experiment number: ")
         experiment = int(experiment_number)
         base_path = f"results_preprocessing/experiment_{experiment}/"
 
-        force_data = np.load(base_path + "force_data.npy")
-        nodes_data = np.load(base_path + "nodes_data.npy", allow_pickle=True)
-        time_data = np.load(base_path + "time_data.npy")
+        try:
+            force_data = np.load(base_path + "force_data.npy")
+            print("First three rows of force_data:")
+            print(force_data[:3])
+        except Exception as e:
+            print(f"⚠️ Could not load force_data.npy — {e}")
 
-        print("First three rows of force_data:")
-        print(force_data[:3])
-        print("\nFirst three rows of nodes_data:")
-        print(nodes_data[:3])
-        print("\nFirst three rows of time_data:")
-        print(time_data[:3])
+        try:
+            nodes_data = np.load(base_path + "nodes_data.npy", allow_pickle=True)
+            print("First three rows of nodes_data:")
+            print(nodes_data[:3])
+        except Exception as e:
+            print(f"❌ Could not load nodes_data.npy — {e}")
 
-        nodes_data_frame0 = nodes_data[0]  # Shape (3406, 5)
+        try:
+            time_data = np.load(base_path + "time_data.npy")
+            print("First three rows of time_data:")
+            print(time_data[:3])
+        except Exception as e:
+            print(f"❌ Could not load time_data.npy — {e}")
+
+
+        nodes_data_frame0 = nodes_data[0]
         node_ids = nodes_data_frame0[:, 0].astype(int)
         x = nodes_data_frame0[:, 1].astype(float)
         y = nodes_data_frame0[:, 2].astype(float)
@@ -183,6 +300,42 @@ def main():
         edge_nodes, hole_nodes = edge_hole_detection_from_arrays(
             node_ids, x, y, min_hole_size, max_hole_size, combine_output, output_dir=base_path
         )
+
+        print("\n--- Proceeding to Mesh Generation ---")
+        coordinates = np.column_stack((x, y))
+
+        mesh = Mesh2D()
+        mesh.set_nodes(coordinates, node_ids=node_ids)
+
+        print("Generating triangular mesh...")
+        nodes, elements = mesh.generate_triangular_mesh(
+            respect_holes=True,
+            hole_node_ids=hole_nodes
+        )
+
+        print("Identifying boundary nodes...")
+        boundaries = mesh.identify_boundary_nodes()
+
+        export_path = os.path.join("results", "mesh_exports", f"experiment_{experiment}")
+        os.makedirs(export_path, exist_ok=True)
+
+        print("Exporting mesh files...")
+        mesh.export_mesh(export_dir=export_path)
+
+        print("Plotting mesh...")
+        mesh_plot_path = os.path.join("results", "mesh_exports", f"experiment_{experiment_number}_mesh_plot.png")
+        all_boundary_ids = np.unique(np.concatenate(list(boundaries.values())))
+        mesh.plot_mesh(
+            save_path=mesh_plot_path,
+            boundary_node_ids=all_boundary_ids
+        )
+
+        print("\n=== MESH SUMMARY ===")
+        print(f"Nodes: {len(nodes)}")
+        print(f"Elements: {len(elements)}")
+        for side, ids in boundaries.items():
+            print(f"{side.capitalize()} boundary: {len(ids)} nodes")
+
     except Exception as e:
         print(f"An error occurred: {e}")
 
