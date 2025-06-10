@@ -74,11 +74,11 @@ class Mesh2D:
         if self.nodes is None or self.elements is None:
             raise ValueError("Mesh not generated.")
         os.makedirs(export_dir, exist_ok=True)
-        nodes_file = os.path.join(export_dir, "mesh_nodes.txt")
-        elements_file = os.path.join(export_dir, "mesh_elements.txt")
+        nodes_file = os.path.join(export_dir, "mesh_nodes.npy")
+        elements_file = os.path.join(export_dir, "mesh_elements.npy")
         node_data = np.column_stack([np.arange(1, len(self.nodes)+1), self.nodes])
-        np.savetxt(nodes_file, node_data, fmt=['%d', '%.6f', '%.6f'], header='NodeID X Y', comments='')
-        np.savetxt(elements_file, self.elements, fmt='%d', header='ElementID Node1 Node2 Node3', comments='')
+        np.save(nodes_file, node_data)  # Save node data including IDs and coordinates
+        np.save(elements_file, self.elements)  # Save elements
         print(f"Mesh exported to:\n  {nodes_file}\n  {elements_file}")
 
     def plot_mesh(self, figsize=(12, 6), save_path=None):
